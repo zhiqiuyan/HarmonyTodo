@@ -48,7 +48,7 @@
         "name": "EntryAbility",
         "srcEntry": "./ets/entryability/EntryAbility.ets",
         "description": "$string:EntryAbility_desc",
-        "icon": "$media:app_icon",
+        "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
@@ -71,7 +71,7 @@
         "srcEntry": "./ets/entryformability/EntryFormAbility.ets",
         "label": "$string:form_label",
         "description": "$string:form_desc",
-        "icon": "$media:app_icon",
+        "icon": "$media:layered_image",
         "type": "form",
         "metadata": [
           {

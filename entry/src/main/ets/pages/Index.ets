@@ -1,8 +1,8 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { window } from '@kit.ArkUI';
-import { QuadrantMeta, QUADRANTS, TaskItem, Q1 } from '../model/TaskItem';
+import { window, KeyboardAvoidMode, curves } from '@kit.ArkUI';
+import { QuadrantMeta, QUADRANTS, TaskItem, Q1, Q2 } from '../model/TaskItem';
 import { Account } from '../model/Account';
 import { dailyQuote, QuoteItem } from '../model/Quote';
 import {
@@ -73,6 +73,8 @@ struct QuickInput {
 struct Index {
   /** 未完成任务全集，四个格子按象限过滤渲染 */
   @State tasks: TaskItem[] = [];
+  /** 全部任务（含已完成），归类页按周统计与已完成弹窗共用此源 */
+  @State allTasks: TaskItem[] = [];
   @State ready: boolean = false;
   @State completedToday: number = 0;
 
@@ -96,6 +98,9 @@ struct Index {
   @State draftImportant: boolean = false;
   @State draftDate: Date = new Date();
   @State showCalendar: boolean = false;
+  /** B 方案编辑屏：当前状态（待办中 / 已完成） */
+  @State draftDone: boolean = false;
+  @State editingDone: boolean = false;
 
   /** 归类说明面板 */
   @State showRuler: boolean = false;
@@ -104,7 +109,16 @@ struct Index {
   @State showDone: boolean = false;
   @State doneTasks: TaskItem[] = [];
 
-  /** 四个格子的快速输入框内容 */
+  /** 底部导航当前页签：0=时间轴 1=归类（本周） 2=设置 */
+  @State navTab: number = 0;
+  /** 导航项点击弹跳：记录正在弹跳的 tab（-1=无），驱动 scale 动画 */
+  @State navBounceTab: number = -1;
+
+  /** 时间轴主屏：象限筛选（0=全部）与统一输入行 */
+  @State timelineFilter: number = 0;
+  @State timelineInput: string = '';
+
+  /** 四个格子的快速输入框内容（编辑面板与兼容旧数据保留） */
   @State inputQ1: string = '';
   @State inputQ2: string = '';
   @State inputQ3: string = '';
@@ -140,6 +154,8 @@ struct Index {
   /** 沉浸式安全区避让（vp） */
   @State topInset: number = 0;
   @State bottomInset: number = 0;
+  /** 软键盘是否弹起：弹起时归零底部留白，让输入行贴住键盘上沿 */
+  @State keyboardVisible: boolean = false;
 
   /** 系统当前字体缩放比，仅用于设置页展示 */
   @State systemFontScale: number = 1;
@@ -147,6 +163,8 @@ struct Index {
   private ctx: common.UIAbilityContext | undefined = undefined;
 
   aboutToAppear(): void {
+    // 官方推荐：底部操作栏被键盘遮挡时用压缩模式，内容区高度减去键盘高度
+    this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
     this.boot();
   }
 
@@ -200,6 +218,9 @@ struct Index {
     }
     try {
       const win: window.Window = await window.getLastWindow(this.ctx);
+      win.on('keyboardHeightChange', (height: number) => {
+        this.keyboardVisible = height > 0;
+      });
       const sysArea: window.AvoidArea =
         win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
       const navArea: window.AvoidArea =
@@ -215,9 +236,10 @@ struct Index {
   private async reload(): Promise<void> {
     try {
       this.tasks = await TaskRepository.getInstance().listActive(this.settings.sortMode);
+      this.allTasks = await TaskRepository.getInstance().listAll();
       this.completedToday = await TaskRepository.getInstance().countCompletedSince(DateUtil.todayStart());
       if (this.showDone) {
-        await this.loadDone();
+        this.loadDone();
       }
     } catch (err) {
       hilog.error(DOMAIN, TAG, 'reload failed: %{public}s', (err as Error).message);
@@ -449,12 +471,16 @@ struct Index {
     this.localCalAutoSync();
   }
 
-  private async loadDone(): Promise<void> {
-    try {
-      this.doneTasks = await TaskRepository.getInstance().listCompleted(50);
-    } catch (err) {
-      hilog.error(DOMAIN, TAG, 'loadDone failed: %{public}s', (err as Error).message);
+  /** 已完成列表与归类页共用 allTasks 数据源，按完成时间倒序取前 50 条 */
+  private loadDone(): void {
+    const done: TaskItem[] = [];
+    for (let i = 0; i < this.allTasks.length; i++) {
+      if (this.allTasks[i].completed) {
+        done.push(this.allTasks[i]);
+      }
     }
+    done.sort((a: TaskItem, b: TaskItem) => b.updatedAt - a.updatedAt);
+    this.doneTasks = done.slice(0, 50);
   }
 
   private openDone(): void {
@@ -487,6 +513,193 @@ struct Index {
       }
     }
     return result;
+  }
+
+  /* ==================== 时间轴主屏 ==================== */
+
+  /** 距今天的天数：负数=逾期，0=今天，正数=未来；未排期返回超大值排末尾 */
+  private dueDays(dueAt: number): number {
+    if (dueAt <= 0) {
+      return 9999;
+    }
+    return Math.round((DateUtil.startOfDay(dueAt) - DateUtil.todayStart()) / DateUtil.DAY_MS);
+  }
+
+  /** 中文大写月份：壹月~拾贰月；未排期返回空串 */
+  private monthCN(dueAt: number): string {
+    if (dueAt <= 0) {
+      return '';
+    }
+    const m: number = new Date(dueAt).getMonth() + 1;
+    if (m < 1 || m > 12) {
+      return '';
+    }
+    const CN: string[] = ['壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖', '拾', '拾壹', '拾贰'];
+    return CN[m - 1] + '月';
+  }
+
+  /** 胶囊长度（vp）：越迫近越长，未排期最短。与原型 DUE_LEN 同序。 */
+  private capsuleLen(dueAt: number): number {
+    const d: number = this.dueDays(dueAt);
+    // 刻度列 28→44vp 容纳中文大写月份，胶囊梯度仅收紧 8vp：
+    // 最大「刻度 44 + 胶囊 282」= 326vp < 内容区 328vp。
+    // 最短档 182vp 仍留标题列约 88vp，不会压成竖排。
+    if (d < 0) {
+      return 282;
+    }
+    if (d === 0) {
+      return 256;
+    }
+    if (d === 1) {
+      return 230;
+    }
+    if (d <= 3) {
+      return 204;
+    }
+    return 182;
+  }
+
+  /** 本周一 00:00（周一为第一天） */
+  private weekMonday(): number {
+    const now: Date = new Date();
+    const dow: number = now.getDay(); // 0=周日
+    const back: number = dow === 0 ? 6 : dow - 1;
+    return DateUtil.dayOffset(-back);
+  }
+
+  /** 本周第 i 天（0=周一）的 00:00 时间戳 */
+  private weekDay(i: number): number {
+    return this.weekMonday() + i * DateUtil.DAY_MS;
+  }
+
+  /** 本周某天的任务数（含待办与已完成，按 dueAt 落在当天统计） */
+  private weekDayCount(dayStart: number): number {
+    let n: number = 0;
+    for (let i = 0; i < this.allTasks.length; i++) {
+      const t: TaskItem = this.allTasks[i];
+      if (t.dueAt > 0 && DateUtil.startOfDay(t.dueAt) === dayStart) {
+        n++;
+      }
+    }
+    return n;
+  }
+
+  /** 本周任务列表：含待办与已完成，dueAt 落在本周内、按象限筛选后按截止日排序 */
+  private weekTasks(): TaskItem[] {
+    const result: TaskItem[] = [];
+    const start: number = this.weekMonday();
+    const end: number = start + 7 * DateUtil.DAY_MS;
+    for (let i = 0; i < this.allTasks.length; i++) {
+      const t: TaskItem = this.allTasks[i];
+      if (t.dueAt <= 0 || t.dueAt < start || t.dueAt >= end) {
+        continue;
+      }
+      if (this.timelineFilter !== 0 && t.quadrant !== this.timelineFilter) {
+        continue;
+      }
+      result.push(t);
+    }
+    result.sort((a: TaskItem, b: TaskItem) => a.dueAt - b.dueAt);
+    return result;
+  }
+
+  /** 本周待办总数（用于柱状图峰值归一） */
+  private weekTotal(): number {
+    let n: number = 0;
+    for (let i = 0; i < 7; i++) {
+      n += this.weekDayCount(this.weekDay(i));
+    }
+    return n;
+  }
+
+  /** 时间轴数据：未完成任务，先按象限筛选，再按截止日由近到远排序 */
+  private timelineTasks(): TaskItem[] {
+    const result: TaskItem[] = [];
+    for (let i = 0; i < this.tasks.length; i++) {
+      const item: TaskItem = this.tasks[i];
+      if (item.completed) {
+        continue;
+      }
+      if (this.timelineFilter !== 0 && item.quadrant !== this.timelineFilter) {
+        continue;
+      }
+      result.push(item);
+    }
+    result.sort((a: TaskItem, b: TaskItem) => {
+      const da: number = this.dueDays(a.dueAt);
+      const db: number = this.dueDays(b.dueAt);
+      if (da !== db) {
+        return da - db;
+      }
+      return b.updatedAt - a.updatedAt;
+    });
+    return result;
+  }
+
+  /** B 方案编辑屏象限按钮标签：Q1 / Q2 / Q3 / Q4 */
+  private quadrantTag(quadrant: number): string {
+    return 'Q' + quadrant;
+  }
+
+  /** B 方案截止日「周五」：取本周五（含今天为周五时即今天） */
+  private fridayDue(): number {
+    const day: number = new Date().getDay();
+    const delta: number = (5 - day + 7) % 7;
+    return DateUtil.dayOffset(delta);
+  }
+
+  /** 四象限色点资源 */
+  private quadrantDot(quadrant: number): Resource {
+    if (quadrant === 1) {
+      return $r('app.color.q1_dot');
+    }
+    if (quadrant === 2) {
+      return $r('app.color.q2_dot');
+    }
+    if (quadrant === 3) {
+      return $r('app.color.q3_dot');
+    }
+    return $r('app.color.q4_dot');
+  }
+
+  /** 四象限短名（底部归类键用，避免长名在窄键中折行） */
+  private quadrantShort(quadrant: number): string {
+    if (quadrant === 1) {
+      return '重要紧急';
+    }
+    if (quadrant === 2) {
+      return '重要不急';
+    }
+    if (quadrant === 3) {
+      return '次要紧急';
+    }
+    return '次要不急';
+  }
+
+  /**
+   * C 式输入行：有字点象限键即归入该象限；无字点键只看该象限（再点取消）。
+   * 回车走 addTask 到当前筛选象限，未筛选时默认 Q2。
+   */
+  private async addToQuadrant(quadrant: number): Promise<void> {
+    const title: string = this.timelineInput.trim();
+    if (title.length > 0) {
+      try {
+        await TaskRepository.getInstance().insert(title, quadrant, 0, false);
+        this.timelineInput = '';
+        await this.afterChange();
+        this.toast('已归入「' + this.quadrantShort(quadrant) + '」');
+      } catch (err) {
+        this.toast('添加失败：' + (err as Error).message);
+      }
+      return;
+    }
+    this.timelineFilter = this.timelineFilter === quadrant ? 0 : quadrant;
+    this.toast(this.timelineFilter === 0 ? '显示全部象限' : '只看「' + this.quadrantShort(quadrant) + '」');
+  }
+
+  private async commitTimelineInput(): Promise<void> {
+    const target: number = this.timelineFilter !== 0 ? this.timelineFilter : 2;
+    await this.addToQuadrant(target);
   }
 
   private inputOf(quadrant: number): string {
@@ -613,6 +826,14 @@ struct Index {
     this.showSettings = true;
   }
 
+  /** 关闭设置面板：底部导航「设置」高亮随之回到时间轴 */
+  private closeSettings(): void {
+    this.showSettings = false;
+    if (this.navTab === 2) {
+      this.navTab = 0;
+    }
+  }
+
   /** 同意协议：记录接受事实与协议版本，之后不再弹出 */
   private acceptAgreement(): void {
     this.agreed = true;
@@ -702,6 +923,8 @@ struct Index {
       this.draftQuadrant = item.quadrant;
       this.draftDue = item.dueAt;
       this.draftImportant = item.important;
+      this.draftDone = item.completed;
+      this.editingDone = item.completed;
       this.draftDate = new Date(item.dueAt > 0 ? item.dueAt : Date.now());
     } else {
       this.editingId = 0;
@@ -709,6 +932,8 @@ struct Index {
       this.draftQuadrant = this.settings.defaultQuadrant;
       this.draftDue = 0;
       this.draftImportant = false;
+      this.draftDone = false;
+      this.editingDone = false;
       this.draftDate = new Date();
     }
     this.showCalendar = false;
@@ -731,8 +956,14 @@ struct Index {
     try {
       if (id > 0) {
         await repo.updateFields(id, title, quadrant, due, important);
+        if (this.draftDone !== this.editingDone) {
+          await repo.setCompleted(id, this.draftDone);
+        }
       } else {
-        await repo.insert(title, quadrant, due, important);
+        const newId: number = await repo.insert(title, quadrant, due, important);
+        if (this.draftDone) {
+          await repo.setCompleted(newId, true);
+        }
       }
       await this.afterChange();
     } catch (err) {
@@ -985,167 +1216,504 @@ struct Index {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
-
       Text('已完成')
-        .fontSize(11)
+        .fontSize(12)
         .fontColor($r('app.color.fg'))
-        .padding({ left: 9, right: 9, top: 6, bottom: 6 })
+        .padding({ left: 12, right: 12, top: 6, bottom: 6 })
         .backgroundColor($r('app.color.card'))
         .borderRadius(13)
-        .margin({ left: 5 })
+        .margin({ left: 10 })
         .onClick(() => {
           this.openDone();
         })
-
-      Row() {
-        SymbolGlyph($r('sys.symbol.gearshape'))
-          .fontSize(17)
-          .fontColor([$r('app.color.fg')])
-      }
-      .justifyContent(FlexAlign.Center)
-      .alignItems(VerticalAlign.Center)
-      .width(30)
-      .height(28)
-      .backgroundColor($r('app.color.card'))
-      .borderRadius(13)
-      .margin({ left: 5 })
-      .onClick(() => {
-        this.openSettings();
-      })
     }
     .width('100%')
-    .padding({ left: 14, right: 14, top: 12, bottom: 8 })
+    .padding({ left: 16, right: 16, top: 8, bottom: 4 })
+    .flexShrink(0)
   }
 
   @Builder
   Board() {
-    Column({ space: 8 }) {
-      Row({ space: 8 }) {
-        this.QuadrantCell(QUADRANTS[0])
-        this.QuadrantCell(QUADRANTS[1])
-      }
-      .width('100%')
-      .layoutWeight(1)
+    Column({ space: 0 }) {
+      Column() {
+        Row({ space: 6 }) {
+          ForEach(QUADRANTS, (meta: QuadrantMeta, index: number) => {
+            this.QuadStatCell(meta)
+          }, (meta: QuadrantMeta) => `quadstat-${meta.key}`)
+        }
+        .width('100%')
+        .margin({ top: 8, bottom: 10 })
 
-      Row({ space: 8 }) {
-        this.QuadrantCell(QUADRANTS[2])
-        this.QuadrantCell(QUADRANTS[3])
+        Row() {
+          Text('今天时间轴 · ' + (this.timelineFilter === 0
+            ? '全部象限' : this.quadrantShort(this.timelineFilter)))
+            .fontSize(14)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.fg'))
+          Blank()
+          Text('待办 ' + this.timelineTasks().length)
+            .fontSize(12)
+            .fontColor($r('app.color.muted'))
+        }
+        .width('100%')
+
+        if (this.timelineTasks().length === 0) {
+          Column() {
+            Text(this.timelineFilter === 0 ? '今天没有待办了' : '这个象限暂时没有待办')
+              .fontSize(12)
+              .fontColor($r('app.color.muted'))
+              .textAlign(TextAlign.Center)
+          }
+          .width('100%')
+          .layoutWeight(1)
+          .justifyContent(FlexAlign.Center)
+        } else {
+          List({ space: 0 }) {
+            ForEach(this.timelineTasks(), (item: TaskItem) => {
+              ListItem() {
+                Row() {
+                  this.TimelineTick(item)
+                  this.TimelineCapsule(item)
+                }
+                .width('100%')
+                .alignItems(VerticalAlign.Top)
+              }
+            }, (item: TaskItem) => `tl-${item.id}-${item.updatedAt}`)
+          }
+          .width('100%')
+          .layoutWeight(1)
+          .scrollBar(BarState.Off)
+        }
       }
       .width('100%')
       .layoutWeight(1)
+      .padding({ left: 16, right: 16, bottom: 8 })
     }
     .width('100%')
     .layoutWeight(1)
-    .padding({ left: 12, right: 12, bottom: 10 })
+  }
+
+  /** 顶部四象限统计条：点击筛选，与底部归类键共用筛选状态 */
+  @Builder
+  QuadStatCell(meta: QuadrantMeta) {
+    Button() {
+      Column() {
+        Text('Q' + meta.key)
+          .fontSize(12)
+          .fontWeight(FontWeight.Bolder)
+          .fontColor(this.quadrantDot(meta.key))
+        Text(this.tasksOf(meta.key).length.toString())
+          .fontSize(20)
+          .fontWeight(FontWeight.Bolder)
+          .fontColor(this.quadrantDot(meta.key))
+          .margin({ top: 2 })
+        Text(meta.name)
+          .fontSize(12)
+          .fontColor(this.quadrantDot(meta.key))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+    }
+    .layoutWeight(1)
+    .height(64)
+    .padding({ left: 6, right: 6, top: 8, bottom: 8 })
+    .backgroundColor(this.quadBg(meta.key))
+    .border({
+      width: this.timelineFilter === meta.key ? 2 : 0,
+      color: this.quadrantDot(meta.key)
+    })
+    .borderRadius(12)
+    .onClick(() => {
+      this.timelineFilter = this.timelineFilter === meta.key ? 0 : meta.key;
+    })
+  }
+
+  /** 时间轴刻度：中文大写月份 + 日期号（或「未」）挂在线上；竖线逐行相接形成连续刻度轴 */
+  @Builder
+  TimelineTick(item: TaskItem) {
+    Column() {
+      Text(this.monthCN(item.dueAt))
+        .fontSize(12)
+        .fontColor($r('app.color.accent'))
+        .width(44)
+        .height(20)
+        .textAlign(TextAlign.Center)
+        .backgroundColor($r('app.color.bg'))
+      Text(item.dueAt > 0 ? new Date(item.dueAt).getDate().toString() : '未')
+        .fontSize(12)
+        .fontColor($r('app.color.muted'))
+        .width(44)
+        .height(20)
+        .textAlign(TextAlign.Center)
+        .backgroundColor($r('app.color.bg'))
+      Column()
+        .width(1)
+        .layoutWeight(1)
+        .backgroundColor($r('app.color.border'))
+    }
+    .width(44)
+    .height(80)
+  }
+
+  /** 时间轴上的一根胶囊：长度由截止日距离决定 */
+  @Builder
+  TimelineCapsule(item: TaskItem) {
+    Row() {
+      Stack() {
+        if (DateUtil.isOverdue(item.dueAt)) {
+          Text('!')
+            .fontSize(10)
+            .fontWeight(FontWeight.Bolder)
+            .fontColor($r('app.color.on_accent'))
+        }
+      }
+      .width(18)
+      .height(18)
+      .borderRadius(9)
+      .backgroundColor(DateUtil.isOverdue(item.dueAt)
+        ? $r('app.color.danger') : this.quadrantDot(item.quadrant))
+      .margin({ right: 6 })
+
+      Column() {
+        Text(item.title)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.fg'))
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+        Text('Q' + item.quadrant + ' · ' +
+          (item.dueAt > 0 ? DateUtil.dueLabel(item.dueAt) : '未排期'))
+          .fontSize(12)
+          .fontColor(this.quadrantDot(item.quadrant))
+          .margin({ top: 2 })
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      Button() {
+        Text('完成')
+          .fontSize(12)
+          .fontColor($r('app.color.muted'))
+      }
+      .width(48)
+      .height(40)
+      .borderRadius(20)
+      .backgroundColor($r('app.color.transparent'))
+      .border({ width: 1, color: $r('app.color.border') })
+      .onClick(() => {
+        this.toggle(item);
+      })
+    }
+    .width(this.capsuleLen(item.dueAt))
+    .height(72)
+    .padding({ left: 12, right: 10, top: 8, bottom: 8 })
+    .backgroundColor(this.quadBg(item.quadrant))
+    .borderRadius(36)
+    .onClick(() => {
+      this.openEditor(item);
+    })
+  }
+
+  /** 底部 C 式输入行：有字点键归入，无字点键筛选 */
+  @Builder
+  TimelineDock() {
+    Column() {
+      Row({ space: 8 }) {
+        QuickInput({
+          text: $timelineInput,
+          placeholder: '记下要做的事，回车归位…',
+          boxHeight: 40,
+          fontSize: 14,
+          boxBg: $r('app.color.bg'),
+          onCommit: () => {
+            this.commitTimelineInput();
+          }
+        })
+        .layoutWeight(1)
+
+        Text('归类')
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.accent'))
+          .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+          .borderRadius(10)
+          .onClick(() => {
+            if (this.timelineInput.trim().length > 0) {
+              this.commitTimelineInput();
+            } else {
+              this.toast('点下方象限键，只看这一类');
+            }
+          })
+      }
+      .width('100%')
+
+      Row({ space: 6 }) {
+        ForEach(QUADRANTS, (meta: QuadrantMeta) => {
+          Row() {
+            Row()
+              .width(6)
+              .height(6)
+              .borderRadius(3)
+              .backgroundColor(this.quadrantDot(meta.key))
+              .margin({ right: 4 })
+            Text(this.quadrantShort(meta.key))
+              .fontSize(12)
+              .fontColor(this.quadrantDot(meta.key))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          .layoutWeight(1)
+          .height(40)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(10)
+          .border({ width: 1, color: this.quadrantDot(meta.key) })
+          .backgroundColor(this.timelineFilter === meta.key
+            ? this.quadBg(meta.key) : $r('app.color.transparent'))
+          .onClick(() => {
+            this.addToQuadrant(meta.key);
+          })
+        }, (meta: QuadrantMeta) => `qkey-${meta.key}`)
+      }
+      .width('100%')
+      .margin({ top: 8 })
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, top: 8, bottom: this.keyboardVisible ? 0 : 12 })
+    .border({ width: { top: 1 }, color: $r('app.color.border') })
+  }
+
+  /** 底部导航栏：时间轴 / 归类 / 设置（三个等宽 tab，图标 + 文字，无加号）
+   *  键盘弹起时隐藏：否则 RESIZE 会把导航栏顶到键盘上方，看起来跟着上弹并挡住输入区 */
+  @Builder
+  BottomNav() {
+    if (!this.keyboardVisible) {
+      Row() {
+        this.NavItem(0, '时间轴', $r('sys.symbol.clock'))
+        this.NavItem(1, '归类', $r('sys.symbol.square_grid_2x2'))
+        this.NavItem(2, '设置', $r('sys.symbol.gearshape'))
+      }
+      .width('100%')
+      .height(56)
+      .padding({ left: 8, right: 8 })
+      // 与页面主体及底部安全区同为 bg，避免导航栏与其下方出现色差
+      .backgroundColor($r('app.color.bg'))
+      .border({ width: { top: 1 }, color: $r('app.color.border') })
+      .flexShrink(0)
+    }
   }
 
   @Builder
-  QuadrantCell(meta: QuadrantMeta) {
-    Column() {
-      Row() {
-        Text(meta.name)
-          .fontSize(13)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.fg'))
-        Blank()
-        Text(this.tasksOf(meta.key).length.toString())
-          .fontSize(11)
-          .fontColor($r('app.color.muted'))
-      }
-      .width('100%')
-      .padding({ left: 2, right: 2 })
-
-      if (this.tasksOf(meta.key).length === 0) {
-        Column() {
-          Text(meta.hint)
-            .fontSize(11)
-            .fontColor($r('app.color.muted'))
-            .textAlign(TextAlign.Center)
-            .opacity(0.8)
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-      } else {
-        List({ space: 5 }) {
-          ForEach(this.tasksOf(meta.key), (item: TaskItem) => {
-            ListItem() {
-              this.TaskCard(item)
-            }
-          }, (item: TaskItem) => `task-${item.id}-${item.updatedAt}`)
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .scrollBar(BarState.Off)
-        .padding({ top: 6 })
-      }
-
-      Row() {
-        Row() {
-          if (meta.key === 1) {
-            QuickInput({
-              text: $inputQ1,
-              placeholder: '添加任务…',
-              boxBg: $r('app.color.card'),
-              onCommit: () => {
-                this.addTask(1, this.inputQ1);
-              }
-            })
-          } else if (meta.key === 2) {
-            QuickInput({
-              text: $inputQ2,
-              placeholder: '添加任务…',
-              boxBg: $r('app.color.card'),
-              onCommit: () => {
-                this.addTask(2, this.inputQ2);
-              }
-            })
-          } else if (meta.key === 3) {
-            QuickInput({
-              text: $inputQ3,
-              placeholder: '添加任务…',
-              boxBg: $r('app.color.card'),
-              onCommit: () => {
-                this.addTask(3, this.inputQ3);
-              }
-            })
-          } else {
-            QuickInput({
-              text: $inputQ4,
-              placeholder: '添加任务…',
-              boxBg: $r('app.color.card'),
-              onCommit: () => {
-                this.addTask(4, this.inputQ4);
-              }
-            })
-          }
-        }
-        .layoutWeight(1)
-
-        Button() {
-          Text('＋')
-            .fontSize(17)
-            .fontColor($r('app.color.on_accent'))
-            .fontWeight(FontWeight.Medium)
-        }
-        .width(32)
-        .height(32)
-        .borderRadius(16)
-        .backgroundColor($r('app.color.accent'))
-        .margin({ left: 6 })
-        .onClick(() => {
-          this.addTask(meta.key, this.inputOf(meta.key));
-        })
-      }
-      .width('100%')
-      .margin({ top: 6 })
+  NavItem(tab: number, label: string, icon: Resource) {
+    Column({ space: 2 }) {
+      SymbolGlyph(icon)
+        .fontSize(22)
+        .fontColor([this.navTab === tab ? $r('app.color.accent') : $r('app.color.muted')])
+      Text(label)
+        .fontSize(12)
+        .fontWeight(this.navTab === tab ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(this.navTab === tab ? $r('app.color.accent') : $r('app.color.muted'))
     }
     .layoutWeight(1)
     .height('100%')
-    .padding(8)
-    .borderRadius(16)
-    .backgroundColor(this.quadBg(meta.key))
-    .clip(true)
+    .justifyContent(FlexAlign.Center)
+    // 图标+文字整体随点击缩放，Spring 曲线产生回弹手感
+    .scale({ x: this.navBounceTab === tab ? 0.86 : 1.0, y: this.navBounceTab === tab ? 0.86 : 1.0 })
+    .animation({ duration: 300, curve: curves.springMotion() })
+    .onClick(() => {
+      // 点击弹跳：先置缩小态，短暂延时后回弹
+      this.navBounceTab = tab;
+      setTimeout(() => {
+        this.navBounceTab = -1;
+      }, 120);
+      // 编辑页/已完成面板打开时，先关闭覆盖层再切页
+      if (this.showEditor) {
+        this.showEditor = false;
+      }
+      if (this.showDone) {
+        this.showDone = false;
+      }
+      this.navTab = tab;
+      if (tab === 2) {
+        this.openSettings();
+      }
+    })
+  }
+
+  /** 归类页：本周负载柱状图 + 象限筛选 + 本周待办列表（B 方案第 3 屏） */
+  @Builder
+  WeekPage() {
+    Column() {
+      Row() {
+        Text('本周待办')
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.fg'))
+        Blank()
+        Text('本周 ' + this.weekTotal() + ' 件')
+          .fontSize(12)
+          .fontColor($r('app.color.muted'))
+      }
+      .width('100%')
+      .padding({ top: 8, bottom: 4 })
+
+      Row({ space: 6 }) {
+        ForEach(['一', '二', '三', '四', '五', '六', '日'], (d: string, i: number) => {
+          Column() {
+            Column()
+              .width(20)
+              .height(this.dayBarHeight(i))
+              .borderRadius(10)
+              .backgroundColor(this.isTodayColumn(i)
+                ? $r('app.color.accent') : $r('app.color.accent_soft'))
+            Column({ space: 2 }) {
+              Text(new Date(this.weekDay(i)).getDate().toString())
+                .fontSize(12)
+                .fontColor($r('app.color.fg'))
+              Text('周' + d)
+                .fontSize(12)
+                .fontColor(this.isTodayColumn(i)
+                  ? $r('app.color.accent') : $r('app.color.muted'))
+            }
+            .margin({ top: 6 })
+          }
+          .layoutWeight(1)
+          .height('100%')
+          // 每列等高 + 内容贴底：柱子按数据高矮往上长，下方星期/日期文字统一落在同一水平线
+          .justifyContent(FlexAlign.End)
+        }, (d: string, i: number) => `weekday-${i}`)
+      }
+      .width('100%')
+      .height(150)
+      .padding({ top: 14, bottom: 8 })
+      .margin({ top: 10, bottom: 6 })
+      .backgroundColor($r('app.color.card'))
+      .borderRadius(16)
+
+      Text('按象限筛选')
+        .fontSize(14)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.fg'))
+        .width('100%')
+        .margin({ top: 6, bottom: 4 })
+
+      Flex({ wrap: FlexWrap.Wrap }) {
+        Text('全部')
+          .fontSize(12)
+          .fontColor(this.timelineFilter === 0
+            ? $r('app.color.on_accent') : $r('app.color.fg'))
+          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+          .backgroundColor(this.timelineFilter === 0
+            ? $r('app.color.accent') : $r('app.color.bg'))
+          .borderRadius(12)
+          .margin({ right: 8, bottom: 8 })
+          .onClick(() => {
+            this.timelineFilter = 0;
+          })
+        ForEach(QUADRANTS, (meta: QuadrantMeta) => {
+          Text(this.quadrantShort(meta.key))
+            .fontSize(12)
+            .fontColor(this.timelineFilter === meta.key
+              ? $r('app.color.on_accent') : this.quadrantDot(meta.key))
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .backgroundColor(this.timelineFilter === meta.key
+              ? this.quadrantDot(meta.key) : this.quadBg(meta.key))
+            .borderRadius(12)
+            .margin({ right: 8, bottom: 8 })
+            .onClick(() => {
+              this.timelineFilter = meta.key;
+            })
+        }, (meta: QuadrantMeta) => `weekfilter-${meta.key}`)
+      }
+      .width('100%')
+
+      Scroll() {
+        Column({ space: 6 }) {
+          if (this.weekTasks().length === 0) {
+            Text('该范围本周暂无待办')
+              .fontSize(12)
+              .fontColor($r('app.color.muted'))
+              .width('100%')
+              .textAlign(TextAlign.Center)
+              .padding({ top: 24 })
+          } else {
+            ForEach(this.weekTasks(), (item: TaskItem) => {
+              Row({ space: 10 }) {
+                Column()
+                  .width(4)
+                  .height(34)
+                  .borderRadius(2)
+                  .backgroundColor(this.quadrantDot(item.quadrant))
+                Column({ space: 2 }) {
+                  Text(item.title)
+                    .fontSize(14)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor($r('app.color.fg'))
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .decoration(item.completed
+                      ? { type: TextDecorationType.LineThrough, color: $r('app.color.muted') }
+                      : { type: TextDecorationType.None, color: $r('app.color.fg') })
+                  Text((item.completed ? '已完成 · ' : '') + this.quadrantShort(item.quadrant)
+                    + ' · ' + DateUtil.dueLabel(item.dueAt))
+                    .fontSize(12)
+                    .fontColor($r('app.color.muted'))
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+              }
+              .width('100%')
+              .padding({ top: 8, bottom: 8 })
+              .backgroundColor($r('app.color.card'))
+              .borderRadius(12)
+              .onClick(() => {
+                this.openEditor(item);
+              })
+            }, (item: TaskItem) => `weektask-${item.id}-${item.updatedAt}`)
+          }
+
+          Text('查看四象限判定尺')
+            .fontSize(13)
+            .fontColor($r('app.color.accent'))
+            .width('100%')
+            .textAlign(TextAlign.Center)
+            .padding({ top: 12, bottom: 12 })
+            .onClick(() => {
+              this.showRuler = true;
+            })
+        }
+        .width('100%')
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+      .align(Alignment.Top)
+    }
+    .width('100%')
+    .layoutWeight(1)
+    .padding({ left: 16, right: 16 })
+  }
+
+  /** 本周柱状图某天柱高：按本周最大值归一，最小 6vp */
+  private dayBarHeight(i: number): number {
+    const n: number = this.weekDayCount(this.weekDay(i));
+    if (n <= 0) {
+      return 6;
+    }
+    let max: number = 1;
+    for (let k = 0; k < 7; k++) {
+      const c: number = this.weekDayCount(this.weekDay(k));
+      if (c > max) {
+        max = c;
+      }
+    }
+    return 6 + Math.round(n / max * 60);
+  }
+
+  private isTodayColumn(i: number): boolean {
+    return DateUtil.startOfDay(this.weekDay(i)) === DateUtil.todayStart();
   }
 
   @Builder
@@ -1401,6 +1969,213 @@ struct Index {
     .height('100%')
   }
 
+  /** 全屏待办任务编辑页（＋ 入口，参考 B 方案编辑屏） */
+  /**
+   * B 方案屏幕 2「任务编辑」：顶栏 编辑/时间轴 + 右侧「编辑任务」，
+   * 标题 / 象限 / 截止日 / 当前状态分组，底部保存 + 删除，底部两个 tab。
+   */
+  @Builder
+  FullTaskEditor() {
+    Column() {
+      // 顶栏：编辑 / 时间轴（胶囊 tab）+ 右侧「编辑任务」
+      Row() {
+        Text('编辑')
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.accent'))
+          .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+          .backgroundColor($r('app.color.accent_soft'))
+          .borderRadius(18)
+        Text('时间轴')
+          .fontSize(14)
+          .fontColor($r('app.color.muted'))
+          .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+          .onClick(() => {
+            this.showEditor = false;
+            this.navTab = 0;
+          })
+        Blank()
+        Text('编辑任务')
+          .fontSize(12)
+          .fontColor($r('app.color.muted'))
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 6, bottom: 6 })
+      .flexShrink(0)
+
+      Scroll() {
+        Column() {
+          Text('任务编辑')
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.fg'))
+            .width('100%')
+            .margin({ top: 10 })
+          Text('截止日会改变轴上胶囊的长度')
+            .fontSize(12)
+            .fontColor($r('app.color.muted'))
+            .width('100%')
+            .margin({ top: 2, bottom: 16 })
+
+          // 任务标题
+          Text('任务标题')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.muted'))
+            .width('100%')
+            .margin({ bottom: 8 })
+          QuickInput({
+            text: $draftTitle,
+            placeholder: '要做什么？',
+            boxHeight: 46,
+            fontSize: 14,
+            boxBg: $r('app.color.card'),
+            onCommit: () => {
+              this.saveDraft();
+            }
+          })
+
+          // 所属象限：Q1 / Q2 / Q3 / Q4
+          Text('所属象限')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.muted'))
+            .width('100%')
+            .margin({ top: 20, bottom: 8 })
+          Row({ space: 7 }) {
+            ForEach(QUADRANTS, (meta: QuadrantMeta) => {
+              Text(this.quadrantTag(meta.key))
+                .fontSize(12)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.draftQuadrant === meta.key
+                  ? this.quadrantDot(meta.key) : $r('app.color.fg'))
+                .height(44)
+                .layoutWeight(1)
+                .textAlign(TextAlign.Center)
+                .backgroundColor(this.draftQuadrant === meta.key
+                  ? this.quadBg(meta.key) : $r('app.color.card'))
+                .border({
+                  width: 1,
+                  color: this.draftQuadrant === meta.key
+                    ? this.quadrantDot(meta.key) : $r('app.color.border')
+                })
+                .borderRadius(10)
+                .onClick(() => {
+                  this.draftQuadrant = meta.key;
+                  this.draftImportant = meta.key === Q1 || meta.key === Q2;
+                })
+            }, (meta: QuadrantMeta) => `bq-${meta.key}`)
+          }
+          .width('100%')
+
+          // 截止日（决定胶囊长度）：今天 / 明天 / 周五 / 未排期
+          Text('截止日（决定胶囊长度）')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.muted'))
+            .width('100%')
+            .margin({ top: 20, bottom: 8 })
+          Row({ space: 7 }) {
+            this.EditorDueChip('今天', DateUtil.todayStart())
+            this.EditorDueChip('明天', DateUtil.dayOffset(1))
+            this.EditorDueChip('周五', this.fridayDue())
+            this.EditorDueChip('未排期', 0)
+          }
+          .width('100%')
+
+          // 当前状态：整宽按钮，点此切换完成状态
+          Text('当前状态')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.muted'))
+            .width('100%')
+            .margin({ top: 20, bottom: 8 })
+          Text(this.draftDone ? '已完成 · 点此恢复为待办' : '待办中 · 点此标记完成')
+            .fontSize(14)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.draftDone ? $r('app.color.accent') : $r('app.color.fg'))
+            .width('100%')
+            .height(46)
+            .textAlign(TextAlign.Center)
+            .backgroundColor(this.draftDone ? $r('app.color.accent_soft') : $r('app.color.card'))
+            .border({ width: 1, color: $r('app.color.border') })
+            .borderRadius(10)
+            .onClick(() => {
+              this.draftDone = !this.draftDone;
+            })
+
+          Button() {
+            Text('保存并返回')
+              .fontSize(14)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.on_accent'))
+          }
+          .width('100%')
+          .height(48)
+          .borderRadius(12)
+          .backgroundColor($r('app.color.accent'))
+          .margin({ top: 24 })
+          .onClick(() => {
+            this.saveDraft();
+          })
+
+          if (this.editingId > 0) {
+            Button() {
+              Text('删除任务')
+                .fontSize(14)
+                .fontWeight(FontWeight.Bold)
+                .fontColor($r('app.color.danger'))
+            }
+            .width('100%')
+            .height(44)
+            .borderRadius(12)
+            .backgroundColor($r('app.color.card'))
+            .border({ width: 1, color: $r('app.color.border') })
+            .margin({ top: 10, bottom: 24 })
+            .onClick(() => {
+              this.confirmDelete(this.editingId, this.draftTitle);
+            })
+          }
+        }
+        .width('100%')
+        .padding({ left: 18, right: 18, top: 2, bottom: 18 })
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+      .align(Alignment.Top)
+
+      // 底部导航：与主页共用同一组件（带图标），编辑页置灰时间轴外的项由点击关闭覆盖层
+      this.BottomNav()
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor($r('app.color.bg'))
+  }
+
+  @Builder
+  EditorDueChip(label: string, dueAt: number) {
+    Text(label)
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(DateUtil.startOfDay(this.draftDue) === dueAt || (dueAt === 0 && this.draftDue === 0)
+        ? $r('app.color.accent') : $r('app.color.fg'))
+      .height(44)
+      .layoutWeight(1)
+      .textAlign(TextAlign.Center)
+      .backgroundColor(DateUtil.startOfDay(this.draftDue) === dueAt || (dueAt === 0 && this.draftDue === 0)
+        ? $r('app.color.accent_soft') : $r('app.color.card'))
+      .border({
+        width: 1,
+        color: DateUtil.startOfDay(this.draftDue) === dueAt || (dueAt === 0 && this.draftDue === 0)
+          ? $r('app.color.accent') : $r('app.color.border')
+      })
+      .borderRadius(10)
+      .onClick(() => {
+        this.draftDue = dueAt;
+      })
+  }
+
   @Builder
   RulerSection(title: string, body: string) {
     Column({ space: 4 }) {
@@ -1633,25 +2408,6 @@ struct Index {
       .margin({ top: 18, bottom: 8 })
   }
 
-  /** 设置卡片内的行：标题 + 右侧箭头 */
-  @Builder
-  RowArrow(title: string, onTap: () => void) {
-    Row() {
-      Text(title)
-        .fontSize(14)
-        .fontColor($r('app.color.fg'))
-        .layoutWeight(1)
-      SymbolGlyph($r('sys.symbol.chevron_right'))
-        .fontSize(13)
-        .fontColor([$r('app.color.muted')])
-    }
-    .width('100%')
-    .padding({ top: 13, bottom: 13 })
-    .onClick(() => {
-      onTap();
-    })
-  }
-
   /** 设置卡片内的行分隔线 */
   @Builder
   RowDivider() {
@@ -1796,7 +2552,7 @@ struct Index {
         .height('100%')
         .backgroundColor($r('app.color.scrim'))
         .onClick(() => {
-          this.showSettings = false;
+          this.closeSettings();
         })
 
       Column() {
@@ -1811,7 +2567,7 @@ struct Index {
             .fontColor($r('app.color.muted'))
             .padding(6)
             .onClick(() => {
-              this.showSettings = false;
+              this.closeSettings();
             })
         }
         .width('100%')
@@ -1821,12 +2577,6 @@ struct Index {
             /* ==================== 通用 ==================== */
             this.GroupTitle('通用')
             Column() {
-              this.RowArrow('归类说明', () => {
-                this.showSettings = false;
-                this.showRuler = true;
-              })
-              this.RowDivider()
-
               Column() {
                 Text('任务排序')
                   .fontSize(14)
@@ -1943,87 +2693,8 @@ struct Index {
             .borderRadius(16)
             .alignItems(HorizontalAlign.Start)
 
-            /* ==================== 华为账号 ==================== */
-            this.GroupTitle('华为账号')
-            Column() {
-              Row() {
-                if (this.hwOpenId.length > 0) {
-                  if (this.hwAvatar.length > 0) {
-                    Image(this.hwAvatar)
-                      .width(34)
-                      .height(34)
-                      .borderRadius(17)
-                      .objectFit(ImageFit.Cover)
-                  } else {
-                    Text(this.hwNickName.length > 0 ? this.hwNickName.substring(0, 1) : '华')
-                      .fontSize(14)
-                      .fontColor('#FFFFFF')
-                      .width(34)
-                      .height(34)
-                      .textAlign(TextAlign.Center)
-                      .borderRadius(17)
-                      .backgroundColor($r('app.color.accent'))
-                  }
-                  Column() {
-                    Text(this.hwNickName.length > 0 ? this.hwNickName : '已登录')
-                      .fontSize(14)
-                      .fontColor($r('app.color.fg'))
-                    Text('华为账号已连接')
-                      .fontSize(10)
-                      .fontColor($r('app.color.muted'))
-                      .margin({ top: 2 })
-                  }
-                  .alignItems(HorizontalAlign.Start)
-                  .layoutWeight(1)
-                  .margin({ left: 10 })
-
-                  this.Chip('退出', () => {
-                    this.hwLogout();
-                  }, true)
-                } else {
-                  Column() {
-                    Text('未登录')
-                      .fontSize(14)
-                      .fontColor($r('app.color.fg'))
-                    Text('登录后可使用云备份')
-                      .fontSize(10)
-                      .fontColor($r('app.color.muted'))
-                      .margin({ top: 2 })
-                  }
-                  .alignItems(HorizontalAlign.Start)
-                  .layoutWeight(1)
-
-                  this.Chip(this.hwBusy ? '登录中…' : '登录', () => {
-                    this.hwLogin();
-                  }, false)
-                }
-              }
-              .width('100%')
-              .padding({ top: 13, bottom: 13 })
-
-              if (this.hwError.length > 0) {
-                this.RowDivider()
-                Text(this.hwError)
-                  .fontSize(10)
-                  .fontColor($r('app.color.danger'))
-                  .width('100%')
-                  .padding({ top: 10, bottom: 10 })
-              }
-              this.RowDivider()
-              Text('需要 AGC「账号服务」与 module.json5 中的 client_id 配置，详见 README')
-                .fontSize(10)
-                .fontColor($r('app.color.muted'))
-                .width('100%')
-                .padding({ top: 10, bottom: 12 })
-            }
-            .width('100%')
-            .padding({ left: 14, right: 14 })
-            .backgroundColor($r('app.color.card'))
-            .borderRadius(16)
-            .alignItems(HorizontalAlign.Start)
-
-            /* ==================== 云备份 ==================== */
-            this.GroupTitle('云备份')
+            /* ==================== 备份（本地文件导入导出） ==================== */
+            this.GroupTitle('备份')
             Column() {
               Row() {
                 Text('自动备份')
@@ -2048,8 +2719,7 @@ struct Index {
                   this.doRestore();
                 }, false)
                 Blank()
-                Text(this.hwOpenId.length === 0 ? '需先登录华为账号' :
-                  (this.lastBackupText.length > 0 ? `上次：${this.lastBackupText}` : '尚未备份'))
+                Text(this.lastBackupText.length > 0 ? `上次：${this.lastBackupText}` : '尚未备份')
                   .fontSize(10)
                   .fontColor($r('app.color.muted'))
               }
@@ -2068,7 +2738,7 @@ struct Index {
               .width('100%')
               .padding({ top: 12, bottom: 12 })
               this.RowDivider()
-              Text('导出/导入走系统文件选择器，不需要华为账号；云端备份需登录华为账号并在 AGC 开通云存储')
+              Text('导出/导入走系统文件选择器，备份文件保存在本机')
                 .fontSize(10)
                 .fontColor($r('app.color.muted'))
                 .width('100%')
@@ -2363,10 +3033,9 @@ struct Index {
         .align(Alignment.Top)
       }
       .width('100%')
-      .height('88%')
+      .height('100%')
       .padding({ left: 18, right: 18, top: 18, bottom: 22 })
       .backgroundColor($r('app.color.bg'))
-      .borderRadius({ topLeft: 20, topRight: 20 })
     }
     .width('100%')
     .height('100%')
@@ -2375,28 +3044,35 @@ struct Index {
   build() {
     Stack() {
       Column() {
-        this.Header()
-
-        if (this.ready) {
-          this.Board()
+        if (this.navTab === 1) {
+          this.WeekPage()
         } else {
-          Column() {
-            LoadingProgress()
-              .width(30)
-              .height(30)
-              .color($r('app.color.accent'))
+          // navTab 0（时间轴）与 2（设置抽屉打开时的背景）都显示时间轴
+          this.Header()
+          if (this.ready) {
+            this.Board()
+          } else {
+            Column() {
+              LoadingProgress()
+                .width(30)
+                .height(30)
+                .color($r('app.color.accent'))
+            }
+            .width('100%')
+            .layoutWeight(1)
+            .justifyContent(FlexAlign.Center)
           }
-          .width('100%')
-          .layoutWeight(1)
-          .justifyContent(FlexAlign.Center)
+          // B 方案主屏：底部输入行「记下要做的事」+ 四象限归入键，作为新建待办入口
+          this.TimelineDock()
         }
+        this.BottomNav()
       }
       .width('100%')
       .height('100%')
       .backgroundColor($r('app.color.bg'))
 
       if (this.showEditor) {
-        this.EditorPanel()
+        this.FullTaskEditor()
       }
 
       if (this.showRuler) {
@@ -2418,7 +3094,10 @@ struct Index {
     .width('100%')
     .height('100%')
     .backgroundColor($r('app.color.bg'))
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-    .padding({ top: this.topInset, bottom: this.bottomInset })
+    // 键盘弹起时移除 BOTTOM 扩展：否则内容被延伸到键盘区域，
+    // 抵消 RESIZE 压缩，导致底部归类键落到键盘下方被遮挡。
+    .expandSafeArea([SafeAreaType.SYSTEM],
+      this.keyboardVisible ? [SafeAreaEdge.TOP] : [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    .padding({ top: this.topInset, bottom: this.keyboardVisible ? 0 : this.bottomInset })
   }
 }
