@@ -1673,16 +1673,6 @@ struct Index {
               })
             }, (item: TaskItem) => `weektask-${item.id}-${item.updatedAt}`)
           }
-
-          Text('查看四象限判定尺')
-            .fontSize(13)
-            .fontColor($r('app.color.accent'))
-            .width('100%')
-            .textAlign(TextAlign.Center)
-            .padding({ top: 12, bottom: 12 })
-            .onClick(() => {
-              this.showRuler = true;
-            })
         }
         .width('100%')
       }
