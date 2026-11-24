@@ -18,7 +18,7 @@ SIGN_TOOL="$LIB/hap-sign-tool.jar"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SIG_DIR="$PROJECT_DIR/signature"
 DIST_DIR="$PROJECT_DIR/dist"
-BUNDLE_NAME="${BUNDLE_NAME:-com.quadrant.todo}"
+BUNDLE_NAME="${BUNDLE_NAME:-cn.yanzhiqiu.todo}"
 API_VERSION="${API_VERSION:-20}"
 
 IN_HAP="${1:-$PROJECT_DIR/entry/build/default/outputs/default/entry-default-unsigned.hap}"

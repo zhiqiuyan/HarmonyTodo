@@ -1,6 +1,6 @@
 {
   "app": {
-    "bundleName": "com.quadrant.todo",
+    "bundleName": "cn.yanzhiqiu.todo",
     "vendor": "quadrant",
     "versionCode": 1010700,
     "versionName": "1.1.7",
