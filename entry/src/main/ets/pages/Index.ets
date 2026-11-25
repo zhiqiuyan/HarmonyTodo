@@ -539,8 +539,8 @@ struct Index {
   }
 
   /**
-   * 时间轴刻度内层统一宽度：取第一行月份宽度（2字=24vp、3字=36vp）。
-   * 所有行共用此宽度 → 月份首字同一条左基线，日期与竖线同一条中心线。
+   * 时间轴刻度基准宽度：取第一行月份宽度（2字=24vp、3字=36vp）。
+   * 首行月份左对齐铺满此宽度，其余月份、日期与竖线均以此宽度的中线居中。
    */
   private tickInnerWidth(): number {
     const tasks: TaskItem[] = this.timelineTasks();
@@ -548,6 +548,12 @@ struct Index {
       return 36;
     }
     return Math.max(this.monthCN(tasks[0].dueAt).length * 12, 24);
+  }
+
+  /** 是否为时间轴首行：仅首行月份左对齐，其余行月份跟随中线居中 */
+  private isFirstTick(item: TaskItem): boolean {
+    const tasks: TaskItem[] = this.timelineTasks();
+    return tasks.length > 0 && tasks[0].id === item.id;
   }
 
   /** 胶囊长度（vp）：越迫近越长，未排期最短。与原型 DUE_LEN 同序。 */
@@ -1347,13 +1353,13 @@ struct Index {
   @Builder
   TimelineTick(item: TaskItem) {
     Column() {
-      // 月份：固定 44vp 宽、左对齐 → 所有行首字落在同一条左基线（页面 16vp 边距）
+      // 首行月份左对齐铺满基准宽度；其余月份与日期、竖线共用同一条中线
       Text(this.monthCN(item.dueAt))
         .fontSize(12)
         .fontColor($r('app.color.accent'))
-        .width(44)
+        .width(this.tickInnerWidth())
         .height(20)
-        .textAlign(TextAlign.Start)
+        .textAlign(this.isFirstTick(item) ? TextAlign.Start : TextAlign.Center)
         .backgroundColor($r('app.color.bg'))
 
       // 日期 + 竖线：宽度统一取第一行月份宽度 → 中心线固定，不随各行月份字数变化
