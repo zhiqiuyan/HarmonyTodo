@@ -1335,28 +1335,36 @@ struct Index {
   @Builder
   TimelineTick(item: TaskItem) {
     Column() {
-      Text(this.monthCN(item.dueAt))
-        .fontSize(12)
-        .fontColor($r('app.color.accent'))
-        .width(44)
-        .height(20)
-        .textAlign(TextAlign.Center)
-        .backgroundColor($r('app.color.bg'))
-      Text(item.dueAt > 0 ? new Date(item.dueAt).getDate().toString() : '未')
-        .fontSize(12)
-        .fontColor($r('app.color.muted'))
-        .width(44)
-        .height(20)
-        .textAlign(TextAlign.Center)
-        .backgroundColor($r('app.color.bg'))
-      Column()
-        .width(1)
-        .layoutWeight(1)
-        .backgroundColor($r('app.color.border'))
+      // 内层宽度随月份字数自适应（壹月2字=24vp，拾壹月3字=36vp），
+      // 月份文字贴内层左边缘 → 第一个字落在页面统一 16vp 边距线上；
+      // 日期与竖线在该内层内居中 → 仍落在月份正中，三者中心线重合。
+      Column() {
+        Text(this.monthCN(item.dueAt))
+          .fontSize(12)
+          .fontColor($r('app.color.accent'))
+          .width('100%')
+          .height(20)
+          .textAlign(TextAlign.Start)
+          .backgroundColor($r('app.color.bg'))
+        Text(item.dueAt > 0 ? new Date(item.dueAt).getDate().toString() : '未')
+          .fontSize(12)
+          .fontColor($r('app.color.muted'))
+          .width('100%')
+          .height(20)
+          .textAlign(TextAlign.Center)
+          .backgroundColor($r('app.color.bg'))
+        Column()
+          .width(1)
+          .layoutWeight(1)
+          .backgroundColor($r('app.color.border'))
+      }
+      .width(Math.max(this.monthCN(item.dueAt).length * 12, 24))
+      .height(80)
+      .alignItems(HorizontalAlign.Center)
     }
     .width(44)
     .height(80)
-    .alignItems(HorizontalAlign.Center)
+    .alignItems(HorizontalAlign.Start)
   }
 
   /** 时间轴上的一根胶囊：长度由截止日距离决定 */
