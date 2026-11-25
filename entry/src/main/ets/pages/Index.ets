@@ -1256,7 +1256,7 @@ struct Index {
             .fontColor($r('app.color.muted'))
         }
         .width('100%')
-        .margin({ bottom: 16 })
+        .margin({ bottom: 24 })
 
         if (this.timelineTasks().length === 0) {
           Column() {
