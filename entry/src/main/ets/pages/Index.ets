@@ -1356,6 +1356,7 @@ struct Index {
     }
     .width(44)
     .height(80)
+    .alignItems(HorizontalAlign.Start)
   }
 
   /** 时间轴上的一根胶囊：长度由截止日距离决定 */
