@@ -556,6 +556,14 @@ struct Index {
     return tasks.length > 0 && tasks[0].id === item.id;
   }
 
+  /**
+   * 非首行月份文字框固定 36vp（最长「拾壹月/拾贰月」），
+   * 再按首行月份的中线做水平偏移，避免两字首行时三字月份被挤换行。
+   */
+  private tickMonthOffset(): number {
+    return this.tickInnerWidth() / 2 - 18;
+  }
+
   /** 胶囊长度（vp）：越迫近越长，未排期最短。与原型 DUE_LEN 同序。 */
   private capsuleLen(dueAt: number): number {
     const d: number = this.dueDays(dueAt);
@@ -1357,9 +1365,10 @@ struct Index {
       Text(this.monthCN(item.dueAt))
         .fontSize(12)
         .fontColor($r('app.color.accent'))
-        .width(this.tickInnerWidth())
+        .width(this.isFirstTick(item) ? this.tickInnerWidth() : 36)
         .height(20)
         .textAlign(this.isFirstTick(item) ? TextAlign.Start : TextAlign.Center)
+        .offset({ x: this.isFirstTick(item) ? 0 : this.tickMonthOffset(), y: 0 })
         .backgroundColor($r('app.color.bg'))
 
       // 日期 + 竖线：宽度统一取第一行月份宽度 → 中心线固定，不随各行月份字数变化
