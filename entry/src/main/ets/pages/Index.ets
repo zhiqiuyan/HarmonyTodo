@@ -1340,14 +1340,14 @@ struct Index {
         .fontColor($r('app.color.accent'))
         .width(44)
         .height(20)
-        .textAlign(TextAlign.Start)
+        .textAlign(TextAlign.Center)
         .backgroundColor($r('app.color.bg'))
       Text(item.dueAt > 0 ? new Date(item.dueAt).getDate().toString() : '未')
         .fontSize(12)
         .fontColor($r('app.color.muted'))
         .width(44)
         .height(20)
-        .textAlign(TextAlign.Start)
+        .textAlign(TextAlign.Center)
         .backgroundColor($r('app.color.bg'))
       Column()
         .width(1)
@@ -1356,7 +1356,7 @@ struct Index {
     }
     .width(44)
     .height(80)
-    .alignItems(HorizontalAlign.Start)
+    .alignItems(HorizontalAlign.Center)
   }
 
   /** 时间轴上的一根胶囊：长度由截止日距离决定 */
