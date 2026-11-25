@@ -11,9 +11,17 @@ set -euo pipefail
 
 DEVECO_HOME="${DEVECO_HOME:-/Applications/DevEco-Studio.app/Contents}"
 LIB="$DEVECO_HOME/sdk/default/openharmony/toolchains/lib"
-JAVA="$DEVECO_HOME/jbr/Contents/Home/bin/java"
-KEYTOOL="$DEVECO_HOME/jbr/Contents/Home/bin/keytool"
+# jbr 目录布局：Windows/Linux 为 jbr/bin，macOS 为 jbr/Contents/Home/bin
+if [ -x "$DEVECO_HOME/jbr/bin/java" ]; then
+  JAVA="$DEVECO_HOME/jbr/bin/java"
+  KEYTOOL="$DEVECO_HOME/jbr/bin/keytool"
+else
+  JAVA="$DEVECO_HOME/jbr/Contents/Home/bin/java"
+  KEYTOOL="$DEVECO_HOME/jbr/Contents/Home/bin/keytool"
+fi
 SIGN_TOOL="$LIB/hap-sign-tool.jar"
+# python 命令名：Windows 多为 python，macOS/Linux 多为 python3
+if command -v python3 >/dev/null 2>&1; then PYTHON=python3; else PYTHON=python; fi
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SIG_DIR="$PROJECT_DIR/signature"
@@ -37,7 +45,7 @@ mkdir -p "$SIG_DIR" "$DIST_DIR"
 echo "[1/4] 组装应用签名证书链 (Root -> CA -> App)"
 APP_CERT="$SIG_DIR/app-release.pem"
 if [ ! -f "$APP_CERT" ]; then
-  python3 - "$PROFILE_CERT" "$PROFILE_TEMPLATE" "$APP_CERT" <<'PY'
+  "$PYTHON" - "$PROFILE_CERT" "$PROFILE_TEMPLATE" "$APP_CERT" <<'PY'
 import json, re, sys
 pem_src, tpl_src, dst = sys.argv[1], sys.argv[2], sys.argv[3]
 certs = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', open(pem_src).read(), re.S)
@@ -52,7 +60,7 @@ fi
 
 echo "[2/4] 生成 Provision Profile (bundle: ${BUNDLE_NAME})"
 PROFILE_JSON="$SIG_DIR/profile.json"
-python3 - "$PROFILE_TEMPLATE" "$PROFILE_JSON" "$BUNDLE_NAME" <<'PY'
+"$PYTHON" - "$PROFILE_TEMPLATE" "$PROFILE_JSON" "$BUNDLE_NAME" <<'PY'
 import json, sys, time
 src, dst, bundle = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(src, 'r', encoding='utf-8') as f:
