@@ -1256,11 +1256,11 @@ struct Index {
             .fontColor($r('app.color.muted'))
         }
         .width('100%')
-        .margin({ bottom: 12 })
+        .margin({ bottom: 16 })
 
         if (this.timelineTasks().length === 0) {
           Column() {
-            Text(this.timelineFilter === 0 ? '今天没有待办了' : '这个象限暂时没有待办')
+            Text(this.timelineFilter === 0 ? '暂无待办' : '这个象限暂时没有待办')
               .fontSize(12)
               .fontColor($r('app.color.muted'))
               .textAlign(TextAlign.Center)
