@@ -1245,7 +1245,7 @@ struct Index {
         .margin({ top: 8, bottom: 10 })
 
         Row() {
-          Text('今天时间轴 · ' + (this.timelineFilter === 0
+          Text('时间轴 · ' + (this.timelineFilter === 0
             ? '全部象限' : this.quadrantShort(this.timelineFilter)))
             .fontSize(14)
             .fontWeight(FontWeight.Medium)
@@ -1256,6 +1256,7 @@ struct Index {
             .fontColor($r('app.color.muted'))
         }
         .width('100%')
+        .margin({ bottom: 12 })
 
         if (this.timelineTasks().length === 0) {
           Column() {
