@@ -538,6 +538,18 @@ struct Index {
     return CN[m - 1] + '月';
   }
 
+  /**
+   * 时间轴刻度内层统一宽度：取第一行月份宽度（2字=24vp、3字=36vp）。
+   * 所有行共用此宽度 → 月份首字同一条左基线，日期与竖线同一条中心线。
+   */
+  private tickInnerWidth(): number {
+    const tasks: TaskItem[] = this.timelineTasks();
+    if (tasks.length === 0) {
+      return 36;
+    }
+    return Math.max(this.monthCN(tasks[0].dueAt).length * 12, 24);
+  }
+
   /** 胶囊长度（vp）：越迫近越长，未排期最短。与原型 DUE_LEN 同序。 */
   private capsuleLen(dueAt: number): number {
     const d: number = this.dueDays(dueAt);
@@ -1335,17 +1347,17 @@ struct Index {
   @Builder
   TimelineTick(item: TaskItem) {
     Column() {
-      // 内层宽度随月份字数自适应（壹月2字=24vp，拾壹月3字=36vp），
-      // 月份文字贴内层左边缘 → 第一个字落在页面统一 16vp 边距线上；
-      // 日期与竖线在该内层内居中 → 仍落在月份正中，三者中心线重合。
+      // 月份：固定 44vp 宽、左对齐 → 所有行首字落在同一条左基线（页面 16vp 边距）
+      Text(this.monthCN(item.dueAt))
+        .fontSize(12)
+        .fontColor($r('app.color.accent'))
+        .width(44)
+        .height(20)
+        .textAlign(TextAlign.Start)
+        .backgroundColor($r('app.color.bg'))
+
+      // 日期 + 竖线：宽度统一取第一行月份宽度 → 中心线固定，不随各行月份字数变化
       Column() {
-        Text(this.monthCN(item.dueAt))
-          .fontSize(12)
-          .fontColor($r('app.color.accent'))
-          .width('100%')
-          .height(20)
-          .textAlign(TextAlign.Start)
-          .backgroundColor($r('app.color.bg'))
         Text(item.dueAt > 0 ? new Date(item.dueAt).getDate().toString() : '未')
           .fontSize(12)
           .fontColor($r('app.color.muted'))
@@ -1358,8 +1370,8 @@ struct Index {
           .layoutWeight(1)
           .backgroundColor($r('app.color.border'))
       }
-      .width(Math.max(this.monthCN(item.dueAt).length * 12, 24))
-      .height(80)
+      .width(this.tickInnerWidth())
+      .layoutWeight(1)
       .alignItems(HorizontalAlign.Center)
     }
     .width(44)
