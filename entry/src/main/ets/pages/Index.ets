@@ -1268,7 +1268,7 @@ struct Index {
           }, (meta: QuadrantMeta) => `quadstat-${meta.key}`)
         }
         .width('100%')
-        .margin({ top: 8, bottom: 10 })
+        .margin({ top: 8, bottom: 16 })
 
         Row() {
           Text('时间轴 · ' + (this.timelineFilter === 0
@@ -1282,7 +1282,7 @@ struct Index {
             .fontColor($r('app.color.muted'))
         }
         .width('100%')
-        .margin({ bottom: 24 })
+        .margin({ bottom: 16 })
 
         if (this.timelineTasks().length === 0) {
           Column() {
@@ -1361,13 +1361,13 @@ struct Index {
   @Builder
   TimelineTick(item: TaskItem) {
     Column() {
-      // 首行月份左对齐铺满基准宽度；其余月份与日期、竖线共用同一条中线
+      // 所有月份统一居中于同一条中心线；首行文字铺满基准宽度，视觉上仍与其他模块左对齐
       Text(this.monthCN(item.dueAt))
         .fontSize(12)
         .fontColor($r('app.color.accent'))
         .width(this.isFirstTick(item) ? this.tickInnerWidth() : 36)
         .height(20)
-        .textAlign(this.isFirstTick(item) ? TextAlign.Start : TextAlign.Center)
+        .textAlign(TextAlign.Center)
         .offset({ x: this.isFirstTick(item) ? 0 : this.tickMonthOffset(), y: 0 })
         .backgroundColor($r('app.color.bg'))
 
